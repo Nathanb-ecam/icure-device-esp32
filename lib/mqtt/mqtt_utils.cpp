@@ -20,12 +20,12 @@ void printPacket(byte *data, size_t dataSize)
     Serial.println();
 }
 
-void reconnect_to_broker(PubSubClient &client)
+void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *mqttUser, const char *mqttPass)
 {
     while (!client.connected())
     {
         Serial.println("Attempting MQTT connection...");
-        if (client.connect("ArduinoClient", "your_mqtt_username", "your_mqtt_password"))
+        if (client.connect(mqttId, mqttUser, mqttPass))
         {
             Serial.println("Connected to MQTT broker");
         }

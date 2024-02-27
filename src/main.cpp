@@ -372,6 +372,7 @@ void loop()
                 // wifiClient.lastError(lastError, 100); // Get the last error for WiFiClientSecure
                 // Serial.print(lastError);
                 // free(lastError);
+                reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD);
             }
         }
 
