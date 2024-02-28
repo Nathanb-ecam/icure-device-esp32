@@ -26,7 +26,7 @@
 
 // Humidity/temperature
 #define DHT_TYPE DHT11
-#define DHTPIN 34
+#define DHTPIN 17
 
 #define heartratePin A1
 

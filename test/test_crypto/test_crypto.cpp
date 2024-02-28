@@ -1,6 +1,11 @@
 #include <Arduino.h>
 #include <unity.h>
+
 #include "crypto_utils.h"
+
+#include <AES.h>
+#include <CBC.h>
+#include <ArduinoJson.h>
 
 void testNearestBlockSize(void)
 {
@@ -42,20 +47,37 @@ void testIVGeneration(void)
     }
 }
 
-void testEncryptCBC(void)
+void testEncryption(void)
 {
-    const size_t textSize = 16;
-    const size_t inc = 16;
-    byte key[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-                  0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
-    byte iv[] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30};
-    byte dataToEncrypt[] = {0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40};
-    byte ciphertext[textSize];
-    byte expectedCiphertext[textSize] = {0};
+    CBC<AES256> aes;
 
-    encrypt_CBC(nullptr, key, textSize, iv, dataToEncrypt, ciphertext, inc);
+    byte iv[16] = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30};
+    byte key[32] = {0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C, 0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF, 0x4F, 0x3C};
+    // The expected cipher for encrypting "dataToEncrypt" was obtained using iCure's encryption function.
+    byte expectedCipher[] = {0x89, 0x04, 0x06, 0x56, 0xA9, 0xB4, 0x62, 0x1C, 0xED, 0x1D, 0x13, 0xDF, 0x60, 0x74, 0xF2, 0xE2, 0xE8, 0xF8, 0xDD, 0xBA, 0x62, 0x12, 0x17, 0x3B, 0xFB, 0x1C, 0xD0, 0x88, 0x8E, 0xE7, 0xEF, 0x6C};
 
-    TEST_ASSERT_EQUAL_UINT8_ARRAY(expectedCiphertext, ciphertext, textSize);
+    String dataToEncrypt = "test the encryption";
+    size_t orignalDataSize = dataToEncrypt.length(); // + 1 for null terminated
+    size_t adjustedSize = find_nearest_block_size(orignalDataSize, 16);
+
+    byte plaintext[orignalDataSize];
+    byte preprocessed[adjustedSize]; // 16 bytes added by pkcs7
+    byte decrypted[orignalDataSize];
+
+    dataToEncrypt.getBytes(plaintext, orignalDataSize + 1);
+
+    apply_pkcs7(plaintext, preprocessed, orignalDataSize, adjustedSize);
+
+    byte ciphertext[adjustedSize];
+
+    encrypt_CBC(&aes, key, adjustedSize, iv, preprocessed, ciphertext, 16); // AES BLOCK SIZE = 16
+
+    TEST_ASSERT_EQUAL_MEMORY(expectedCipher, ciphertext, adjustedSize);
+
+    delay(100);
+    decrypt_CBC(&aes, key, adjustedSize, iv, ciphertext, decrypted, 16);
+
+    TEST_ASSERT_EQUAL_MEMORY(decrypted, plaintext, orignalDataSize);
 }
 
 void testIsUuidNotEmpty(void)
@@ -71,12 +93,11 @@ void testIsUuidNotEmpty(void)
 
 void setup()
 {
-    delay(2000);
 
-    UNITY_BEGIN(); // IMPORTANT LINE!
+    UNITY_BEGIN();
     RUN_TEST(testNearestBlockSize);
     RUN_TEST(testApplyPkcs7);
-    // RUN_TEST(testEncryptCBC);
+    RUN_TEST(testEncryption);
     RUN_TEST(testIsUuidNotEmpty);
     RUN_TEST(testIVGeneration);
     UNITY_END();
