@@ -1,7 +1,6 @@
 #include <Arduino.h>
 
 #include <Base64.h>
-
 #include <DHT.h>
 #include <DFRobot_Heartrate.h>
 
@@ -15,12 +14,19 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoBLE.h>
 
+#include <string.h>
+
+/* MY UTILS */
+
 #include "mqtt_utils.h"
 #include "crypto_utils.h"
 #include "led_utils.h"
-#include "secrets.h"
 
-#include <string.h>
+/* CONSTANTS */
+#include "secrets.h"
+#include "constants/icure_device_config.h"
+#include "constants/ble_constants.h"
+#include "constants/crypto_constants.h"
 
 #define INTERVAL_BETWEEN_MQTT_PACKETS 15000 // ms
 
@@ -30,84 +36,7 @@
 
 #define heartratePin A1
 
-#define MQTT_MAX_PACKET_SIZE 1024
-#define MAX_AUTH_SIZE 64
-// uid, token , cid
-
-// 256 required by mqttLib - 16 from IV
-#define AES_BLOCK_SIZE 16
-#define AES_KEY_SIZE 32
-#define IV_SIZE 16
-
 #define ESP_LED_BUILTIN 2
-
-enum State
-{
-    INIT,
-    BLUETOOTH_KEY_CONFIG,
-    SETUP_MQTT,
-    READ_SENSORS_DATA,
-    ENCRYPT_DATA,
-    PREPARE_MQTT_PACKET,
-    HANDLE_WAIT,
-    SEND_DATA,
-    ERROR
-};
-
-/* BLUETOOTH INIT */
-
-bool builtinLedOn = false;
-struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
-{
-    // byte senderUuid[16];
-    bool senderIdReady = false;
-    String senderIdString = "notjing@email.com";
-
-    byte contactId[16];
-    String contactIdHexString;
-    bool contactIdReady = false;
-
-    byte senderToken[16];
-    String senderTokenHexString;
-    bool senderTokenReady = false;
-
-    byte encKey[AES_KEY_SIZE];
-    String encKeyHexString;
-    bool encKeyReady = false;
-};
-
-struct WIFI_Config
-{
-    const char *ssid = SECRET_SSID; // your network SSID (name)
-    const char *pass = SECRET_PASS;
-};
-
-struct Broker_Config
-{
-    const char *IP = LOCAL_BROKER;
-    // const char *IP = TEST_BROKER;
-    int port = 1883;
-    // int port = 8883;
-    const char *topic = TOPIC;
-};
-
-boolean isAdvertising = false;
-
-BLEService icureService(BLE_SVC_UUID);
-// toggle led characteristic
-BLEStringCharacteristic testCharacteristic(BLE_TEST_UUID, BLEWrite, 5); // android app can try to turn on arduino built in led
-// sender uuid : 128 bit
-BLEStringCharacteristic senderIdCharacteristic(BLE_SENDER_ID_UUID, BLEWrite, 64);
-// sender token
-BLECharacteristic senderTokenCharacteristic(BLE_SENDER_TOKEN_UUID, BLEWrite, 16);
-// contact id
-BLECharacteristic contactIdCharacteristic(BLE_CONTACT_ID, BLEWrite, 16);
-// Symmetric key characteristic : 256 bit key
-BLECharacteristic keyCharacteristic(BLE_KEY_UUID, BLEWrite, 32);
-// TO Notify the android app when all required characteristics are set
-BLEByteCharacteristic statusCharacteristic(BLE_STATUS_UUID, BLENotify); // BLERead | BLENotify
-
-/* MQTT INIT*/
 
 StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_fullData;
 String jsonFullDataStr;
@@ -117,40 +46,18 @@ StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_sensorsData;
 String jsonSensorDataStr;
 size_t jsonSensorDataSize;
 
-/* SCHEDULE SEQUENCE : READ_SENSOR -> ENCRYPT_DATA -> PREPARE_MQTT_PACKET -> SEND_DATA*/
-struct Schedules
-{
-    unsigned long previousMillis = 0;
-    unsigned long currentMillis = 0;
-};
-
 /* SENSORS */
 DHT dht(DHTPIN, DHT_TYPE);
 DFRobot_Heartrate heartrate(DIGITAL_MODE);
 
-/* ENCRYPTION */
-
-byte iv[16];
-// = {
-//     0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-//     0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11};
-
-byte data[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE - 32]; // we remove 16 because padding may add up to 16 and IV adds 16
-byte preprocessed_data[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE - 16];
-byte ciphertext[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE - 16];
-size_t adjustedSize;                                      // data size + padding
-byte encryptedSelf[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE]; // +16 since there is IV
-size_t encryptedSelfSize;                                 // adjusted size + IV size
-// String encodedData;                                       // base64encoded
-
-byte nonEncryptedSelf[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE]; // +16 since there is IV
-size_t nonEncryptedSelfSize;                                 // adjusted size + IV size
-// unsigned long messageCount = 0;
+/* FULL DATA TO BE SENT */
 byte mqttPacket[MQTT_MAX_PACKET_SIZE];
 size_t mqttPacketSize;
 
-size_t encryptedSelfBase64Size;
-int base64EncodeLength;
+// USED ONLY IF UsePacketEncrypt is set to false
+byte nonEncryptedSelf[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE]; // +16 since there is IV
+size_t nonEncryptedSelfSize;                                 // adjusted size + IV size
+// unsigned long messageCount = 0;
 
 BLE_Data bleData;
 Broker_Config broker;
@@ -160,8 +67,9 @@ Schedules schedule;
 WiFiClient wifiClient;
 // WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
-CBC<AES256> aes;
 
+CBC<AES256> aes;
+Encryption_Data encryptData;
 State state = INIT;
 
 bool usePacketEncryption = USE_PACKET_ENCRYPTION;
@@ -269,7 +177,7 @@ void loop()
         serializeJson(json_sensorsData, jsonSensorDataStr);
         jsonSensorDataSize = jsonSensorDataStr.length();
 
-        jsonSensorDataStr.getBytes(data, jsonSensorDataSize + 1);
+        jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
         Serial.println();
         // serializeJson(json_sensorsData, Serial);
         if (usePacketEncryption)
@@ -286,14 +194,14 @@ void loop()
     case ENCRYPT_DATA:
         Serial.println("[STATE] ENCRYPTING DATA");
         mqttClient.loop();
-        adjustedSize = find_nearest_block_size(jsonSensorDataSize, AES_BLOCK_SIZE);
-        encryptedSelfSize = adjustedSize + 16; // 16 padding + 16 IV bytes
+        encryptData.adjustedSize = find_nearest_block_size(jsonSensorDataSize, AES_BLOCK_SIZE);
+        encryptData.encryptedSelfSize = encryptData.adjustedSize + 16; // 16 padding + 16 IV bytes
 
-        generate_IV(iv);
+        generate_IV(encryptData.iv);
 
-        apply_pkcs7(data, preprocessed_data, jsonSensorDataSize, adjustedSize);
+        apply_pkcs7(encryptData.plaintext, encryptData.plaintext_with_padding, jsonSensorDataSize, encryptData.adjustedSize);
 
-        encrypt_CBC(&aes, bleData.encKey, adjustedSize, iv, preprocessed_data, ciphertext, AES_BLOCK_SIZE);
+        encrypt_CBC(&aes, bleData.encKey, encryptData.adjustedSize, encryptData.iv, encryptData.plaintext_with_padding, encryptData.ciphertext, AES_BLOCK_SIZE);
 
         state = PREPARE_MQTT_PACKET;
         break;
@@ -306,24 +214,17 @@ void loop()
         {
             // to the full JSON,we add the encrypted part of the data : {"*":{"measureValue":{"value":"22","unit":"°C"}}}
 
-            memcpy(encryptedSelf, iv, IV_SIZE);
-            memcpy(encryptedSelf + IV_SIZE, ciphertext, adjustedSize);
+            memcpy(encryptData.encryptedSelf, encryptData.iv, IV_SIZE);
+            memcpy(encryptData.encryptedSelf + IV_SIZE, encryptData.ciphertext, encryptData.adjustedSize);
 
-            // arduino nano 33 IoT
-            size_t encryptedSelfBase64Size = Base64.encodedLength(encryptedSelfSize);
-            char encodedEncryptedSelf[encryptedSelfBase64Size];
-            base64EncodeLength = Base64.encode(encodedEncryptedSelf, (char *)encryptedSelf, encryptedSelfSize);
+            encryptData.encryptedSelfBase64Size = Base64.encodedLength(encryptData.encryptedSelfSize);
+            char encodedEncryptedSelf[encryptData.encryptedSelfBase64Size];
+            encryptData.base64EncodeLength = Base64.encode(encodedEncryptedSelf, (char *)encryptData.encryptedSelf, encryptData.encryptedSelfSize);
             json_fullData["data"] = encodedEncryptedSelf;
-
-            // ESP 32
-            // String encodedData = base64::encode((char *)encryptedSelf);
-            // // Serial.println((char *)encryptedSelf);
-            // // Serial.println(encodedData);
-            // json_fullData["data"] = encodedData;
         }
         else
         {
-            memcpy(nonEncryptedSelf, data, jsonSensorDataSize);
+            memcpy(nonEncryptedSelf, encryptData.plaintext, jsonSensorDataSize);
             nonEncryptedSelfSize = jsonSensorDataSize;
 
             json_fullData["data"] = json_sensorsData;
@@ -343,11 +244,6 @@ void loop()
         Serial.println();
         Serial.println("[STATE] SEND DATA TO BROKER");
         mqttClient.loop();
-
-        // if (!mqttClient.connected())
-        // {
-        //     reconnect_to_broker(mqttClient);
-        // }
 
         if (mqttPacketSize > MQTT_MAX_PACKET_SIZE)
         {
@@ -471,8 +367,8 @@ void handle_characteristic_changes()
 {
     if (testCharacteristic.written())
     {
-        Serial.println();
-        // toggle_led(&builtinLedOn, ESP_LED_BUILTIN);
+        // Serial.println();
+        toggle_led(&builtinLedOn, ESP_LED_BUILTIN);
     }
     if (senderTokenCharacteristic.written())
     {
