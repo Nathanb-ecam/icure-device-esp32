@@ -22,7 +22,7 @@
 
 #include <string.h>
 
-#define INTERVAL_BETWEEN_MQTT_PACKETS 7000 // ms
+#define INTERVAL_BETWEEN_MQTT_PACKETS 15000 // ms
 
 // Humidity/temperature
 #define DHT_TYPE DHT11
@@ -50,7 +50,7 @@ enum State
     ENCRYPT_DATA,
     PREPARE_MQTT_PACKET,
     HANDLE_WAIT,
-    SENDING_DATA,
+    SEND_DATA,
     ERROR
 };
 
@@ -61,7 +61,7 @@ struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
     // byte senderUuid[16];
     bool senderIdReady = false;
-    String senderIdString;
+    String senderIdString = "notjing@email.com";
 
     byte contactId[16];
     String contactIdHexString;
@@ -191,7 +191,7 @@ void loop()
         if (sizeof(bleData.senderIdString) && isUuidNotEmpty(bleData.senderToken, sizeof(bleData.senderToken)) && isUuidNotEmpty(bleData.contactId, sizeof(bleData.contactId)))
         {
             // then we can skip bluetooth step and directly start sending data
-            state = SENDING_DATA;
+            state = SEND_DATA;
         }
         else
         {
@@ -228,6 +228,7 @@ void loop()
                         state = check_if_end_of_bluetooth();
                         if (state == SETUP_MQTT)
                         {
+                            BLE.stopAdvertise();
                             break;
                         }
                     }
@@ -335,10 +336,10 @@ void loop()
         jsonFullDataStr.getBytes(mqttPacket, jsonFullDataSize + 1);
         mqttPacketSize = jsonFullDataSize;
 
-        state = SENDING_DATA;
+        state = SEND_DATA;
         break;
 
-    case SENDING_DATA:
+    case SEND_DATA:
         Serial.println();
         Serial.println("[STATE] SEND DATA TO BROKER");
         mqttClient.loop();
@@ -481,7 +482,10 @@ void handle_characteristic_changes()
     }
     if (senderIdCharacteristic.written())
     {
-        bleData.senderIdString = senderIdCharacteristic.value();
+        if (bleData.senderIdString.length() == 0)
+        {
+            bleData.senderIdString = senderIdCharacteristic.value();
+        }
         bleData.senderIdReady = true;
     }
     if (contactIdCharacteristic.written())
