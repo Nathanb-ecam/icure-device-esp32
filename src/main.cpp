@@ -28,15 +28,25 @@
 #include "constants/ble_constants.h"
 #include "constants/crypto_constants.h"
 
+/* SSL CONFIG */
+#include "ssl_brokers/my_azure.h"
+// #include "ssl_brokers/testmosquitto.h"
+
 #define INTERVAL_BETWEEN_MQTT_PACKETS 15000 // ms
 
 // Humidity/temperature
 #define DHT_TYPE DHT11
 #define DHTPIN 17
-
 #define heartratePin A1
-
 #define ESP_LED_BUILTIN 2
+
+struct Broker_Config
+{
+    // const char *IP = LOCAL_BROKER;
+    const char *IP = BROKER;
+    int port = BROKER_PORT;
+    const char *topic = TOPIC;
+};
 
 StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_fullData;
 String jsonFullDataStr;
@@ -49,6 +59,8 @@ size_t jsonSensorDataSize;
 /* SENSORS */
 DHT dht(DHTPIN, DHT_TYPE);
 DFRobot_Heartrate heartrate(DIGITAL_MODE);
+String temperatureString;
+float roundedTemperature;
 
 /* FULL DATA TO BE SENT */
 byte mqttPacket[MQTT_MAX_PACKET_SIZE];
@@ -64,8 +76,8 @@ Broker_Config broker;
 WIFI_Config wifi;
 Schedules schedule;
 
-WiFiClient wifiClient;
-// WiFiClientSecure wifiClient;
+// WiFiClient wifiClient;
+WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
@@ -115,7 +127,7 @@ void loop()
         break;
 
     case BLUETOOTH_KEY_CONFIG:
-        // led_blink(500, ESP_LED_BUILTIN);
+        led_blink(500, ESP_LED_BUILTIN);
         {
             BLEDevice central = BLE.central();
             if (central)
@@ -155,7 +167,9 @@ void loop()
 
         wifi_init(wifi.ssid, wifi.pass);
         // TLS configuration  : client cert and client key to come
-        // wifiClient.setCACert(CA_CERT);
+        wifiClient.setCACert(CA_CERT);
+        wifiClient.setCertificate(CLIENT_CERT);
+        wifiClient.setPrivateKey(CLIENT_KEY);
 
         mqtt_broker_init(mqttClient, broker.IP, broker.port, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD);
 
@@ -170,7 +184,9 @@ void loop()
 
         //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}} }
 
-        json_sensorsData["content"]["*"]["measureValue"]["value"] = dht.readTemperature();
+        temperatureString = String(dht.readTemperature(), 1);
+        roundedTemperature = temperatureString.toFloat();
+        json_sensorsData["content"]["*"]["measureValue"]["value"] = temperatureString;
         json_sensorsData["content"]["*"]["measureValue"]["unit"] = "°C";
         json_sensorsData["content"]["*"]["measureValue"]["comment"] = "temperature";
 
@@ -230,7 +246,7 @@ void loop()
             json_fullData["data"] = json_sensorsData;
         }
 
-        serializeJson(json_fullData, Serial);
+        // serializeJson(json_fullData, Serial);
         serializeJson(json_fullData, jsonFullDataStr);
 
         jsonFullDataSize = jsonFullDataStr.length();
@@ -257,7 +273,9 @@ void loop()
             {
                 Serial.print("Connected, mqtt_mqttClient state: ");
                 Serial.println(mqttClient.state());
-                serializeJson(json_fullData, Serial);
+                // serializeJson(json_fullData, Serial);
+                Serial.print("Temperature : ");
+                Serial.println(roundedTemperature);
                 mqtt_publish(mqttClient, broker.topic, mqttPacket, mqttPacketSize);
             }
             else
@@ -370,12 +388,6 @@ void handle_characteristic_changes()
         // Serial.println();
         toggle_led(&builtinLedOn, ESP_LED_BUILTIN);
     }
-    if (senderTokenCharacteristic.written())
-    {
-        const byte *receivedToken = senderTokenCharacteristic.value();
-        memcpy(bleData.senderToken, receivedToken, 16);
-        bleData.senderTokenReady = true;
-    }
     if (senderIdCharacteristic.written())
     {
         if (bleData.senderIdString.length() == 0)
@@ -383,6 +395,12 @@ void handle_characteristic_changes()
             bleData.senderIdString = senderIdCharacteristic.value();
         }
         bleData.senderIdReady = true;
+    }
+    if (senderTokenCharacteristic.written())
+    {
+        const byte *receivedToken = senderTokenCharacteristic.value();
+        memcpy(bleData.senderToken, receivedToken, 16);
+        bleData.senderTokenReady = true;
     }
     if (contactIdCharacteristic.written())
     {

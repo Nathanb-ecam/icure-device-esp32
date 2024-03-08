@@ -25,7 +25,7 @@ struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
     // byte senderUuid[16];
     bool senderIdReady = false;
-    String senderIdString = "@email.com";
+    String senderIdString;
 
     byte contactId[16];
     String contactIdHexString;
