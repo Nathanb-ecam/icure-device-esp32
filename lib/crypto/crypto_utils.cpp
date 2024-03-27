@@ -1,15 +1,15 @@
 #include <crypto_utils.h>
 
-bool isUuidNotEmpty(const byte *uuidArray, size_t size)
+bool isArrayEmpty(const byte *uuidArray, size_t size)
 {
     for (size_t i = 0; i < size; ++i)
     {
         if (uuidArray[i] != 0)
         {
-            return true;
+            return false;
         }
     }
-    return false;
+    return true;
 }
 
 void printUuid(const byte *uuidArray, size_t size)

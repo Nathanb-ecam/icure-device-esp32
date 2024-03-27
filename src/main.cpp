@@ -27,9 +27,10 @@
 #include "constants/icure_device_config.h"
 #include "constants/ble_constants.h"
 #include "constants/crypto_constants.h"
+#include "constants/mqtt_constants.h"
 
 /* SSL CONFIG */
-#include "ssl_brokers/my_azure.h"
+// #include "ssl_brokers/my_azure.h"
 // #include "ssl_brokers/testmosquitto.h"
 
 #define INTERVAL_BETWEEN_MQTT_PACKETS 15000 // ms
@@ -42,8 +43,8 @@
 
 struct Broker_Config
 {
-    // const char *IP = LOCAL_BROKER;
-    const char *IP = BROKER;
+    const char *IP = LOCAL_BROKER;
+    // const char *IP = BROKER;
     int port = BROKER_PORT;
     const char *topic = TOPIC;
 };
@@ -76,8 +77,8 @@ Broker_Config broker;
 WIFI_Config wifi;
 Schedules schedule;
 
-// WiFiClient wifiClient;
-WiFiClientSecure wifiClient;
+WiFiClient wifiClient;
+// WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
@@ -108,7 +109,11 @@ void loop()
     {
     case INIT:
         Serial.println("[STATE] Initialization");
-        if (sizeof(bleData.senderIdString) && isUuidNotEmpty(bleData.senderToken, sizeof(bleData.senderToken)) && isUuidNotEmpty(bleData.contactId, sizeof(bleData.contactId)))
+        if (
+            sizeof(bleData.senderIdString) &&
+            !isArrayEmpty(bleData.senderToken, sizeof(bleData.senderToken)) &&
+            !isArrayEmpty(bleData.contactId, sizeof(bleData.contactId)) &&
+            !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
         {
             // then we can skip bluetooth step and directly start sending data
             state = SEND_DATA;
@@ -140,9 +145,6 @@ void loop()
                     handle_characteristic_changes();
                     if (bleData.senderTokenReady && bleData.senderIdReady && bleData.encKeyReady && bleData.contactIdReady)
                     {
-                        bleData.contactIdHexString = byteToHexString(bleData.contactId, sizeof(bleData.contactId));
-                        bleData.senderTokenHexString = byteToHexString(bleData.senderToken, sizeof(bleData.senderToken));
-                        bleData.encKeyHexString = byteToHexString(bleData.encKey, sizeof(bleData.encKey));
                         print_characteristic_values();
 
                         state = check_if_end_of_bluetooth();
@@ -167,9 +169,9 @@ void loop()
 
         wifi_init(wifi.ssid, wifi.pass);
         // TLS configuration  : client cert and client key to come
-        wifiClient.setCACert(CA_CERT);
-        wifiClient.setCertificate(CLIENT_CERT);
-        wifiClient.setPrivateKey(CLIENT_KEY);
+        // wifiClient.setCACert(CA_CERT);
+        // wifiClient.setCertificate(CLIENT_CERT);
+        // wifiClient.setPrivateKey(CLIENT_KEY);
 
         mqtt_broker_init(mqttClient, broker.IP, broker.port, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD);
 
@@ -362,7 +364,10 @@ void wifi_init(const char *ssid, const char *password)
 State check_if_end_of_bluetooth()
 {
     if (
-        sizeof(bleData.senderIdString) && isUuidNotEmpty(bleData.senderToken, sizeof(bleData.senderToken)) && isUuidNotEmpty(bleData.encKey, sizeof(bleData.encKey)) && isUuidNotEmpty(bleData.contactId, sizeof(bleData.contactId)))
+        sizeof(bleData.senderIdString) &&
+        !isArrayEmpty(bleData.senderToken, sizeof(bleData.senderToken)) &&
+        !isArrayEmpty(bleData.contactId, sizeof(bleData.contactId)) &&
+        !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
     {
         Serial.println("[INFO] BLE configuratin finished");
 
@@ -390,28 +395,36 @@ void handle_characteristic_changes()
     }
     if (senderIdCharacteristic.written())
     {
+        // const byte *receivedToken = senderIdCharacteristic.value();
+        // memcpy(bleData.senderId, receivedToken, 64);
+        // bleData.senderIdString = byteToHexString(bleData.senderId, sizeof(bleData.senderId));
+
         if (bleData.senderIdString.length() == 0)
         {
             bleData.senderIdString = senderIdCharacteristic.value();
         }
+
         bleData.senderIdReady = true;
     }
     if (senderTokenCharacteristic.written())
     {
         const byte *receivedToken = senderTokenCharacteristic.value();
         memcpy(bleData.senderToken, receivedToken, 16);
+        bleData.senderTokenHexString = byteToHexString(bleData.senderToken, sizeof(bleData.senderToken));
         bleData.senderTokenReady = true;
     }
     if (contactIdCharacteristic.written())
     {
         const byte *receivedUuid = contactIdCharacteristic.value();
         memcpy(bleData.contactId, receivedUuid, 16);
+        bleData.contactIdHexString = byteToHexString(bleData.contactId, sizeof(bleData.contactId));
         bleData.contactIdReady = true;
     }
     if (keyCharacteristic.written())
     {
         const byte *receivedKey = keyCharacteristic.value();
         memcpy(bleData.encKey, receivedKey, 32);
+        bleData.encKeyHexString = byteToHexString(bleData.encKey, sizeof(bleData.encKey));
         bleData.encKeyReady = true;
     }
 }

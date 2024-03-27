@@ -23,7 +23,7 @@ BLEByteCharacteristic statusCharacteristic(BLE_STATUS_UUID, BLENotify); // BLERe
 
 struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
-    // byte senderUuid[16];
+    byte senderId[32];
     bool senderIdReady = false;
     String senderIdString;
 

@@ -1,9 +1,9 @@
 #include <mqtt_utils.h>
 
-// void mqtt_packet_init(JsonDocument &json_data, String senderIdString, byte *senderToken, byte *contactId)
-void mqtt_packet_init(JsonDocument &json_data, String senderIdString, String senderToken, String contactId)
+// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte *senderToken, byte *contactId)
+void mqtt_packet_init(JsonDocument &json_data, String senderId, String senderToken, String contactId)
 {
-    json_data["uid"] = senderIdString;
+    json_data["uid"] = senderId;
 
     json_data["cid"] = contactId;
 

@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <Cipher.h>
 
-bool isUuidNotEmpty(const byte *uuidArray, size_t size);
+bool isArrayEmpty(const byte *uuidArray, size_t size);
 
 void printUuid(const byte *uuidArray, size_t size);
 

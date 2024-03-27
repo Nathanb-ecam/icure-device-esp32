@@ -4,8 +4,8 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 
-// void mqtt_packet_init(JsonDocument &json_data, String senderIdString, byte *senderToken, byte *contactId);
-void mqtt_packet_init(JsonDocument &json_data, String senderIdString, String senderToken, String contactId);
+// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte *senderToken, byte *contactId);
+void mqtt_packet_init(JsonDocument &json_data, String senderId, String senderToken, String contactId);
 
 void printPacket(byte *data, size_t dataSize);
 
