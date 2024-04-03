@@ -70,13 +70,13 @@ void apply_pkcs7(byte *data, byte *preprocessed_data, size_t originalSize, size_
 { // PKCS7
     memcpy(preprocessed_data, data, originalSize);
     int padding = adjustedSize - originalSize;
-    Serial.print("[INFO] Pkcs7 : ");
-    Serial.println(padding);
+    // Serial.print("[INFO] Pkcs7 : ");
+    // Serial.println(padding);
 
     byte bytePadding = static_cast<byte>(padding);
 
     memset(preprocessed_data + originalSize, bytePadding, padding);
-    Serial.println();
+    // Serial.println();
 }
 
 void encrypt_CBC(Cipher *cipher, byte *key, size_t textSize, byte *iv, byte *dataToEncrypt, byte *ciphertext, size_t inc)
@@ -137,13 +137,13 @@ void decrypt_CBC(Cipher *cipher, byte *key, size_t textSize, byte *iv, byte *cip
 
 void generate_IV(byte *iv)
 {
-    Serial.print("[INFO] IV : ");
+    // Serial.print("[INFO] IV : ");
     for (int i = 0; i < 16; i++)
     {
-        u_int8_t ran = analogRead(0);
+        // u_int8_t ran = analogRead(0);
         u_int8_t ran1 = random(256);
-        u_int8_t notSoRandom = ran - ran1;
-        byte d = static_cast<byte>(notSoRandom);
+        // u_int8_t notSoRandom = ran - ran1;
+        byte d = static_cast<byte>(ran1);
 
         String hexString = String(d, HEX);
         if (hexString.length() == 1)
@@ -152,7 +152,7 @@ void generate_IV(byte *iv)
         }
 
         iv[i] = (byte)strtol(hexString.c_str(), NULL, 16);
-        Serial.print(hexString);
+        // Serial.print(hexString);
     }
-    Serial.println();
+    // Serial.println();
 }

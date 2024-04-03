@@ -32,8 +32,9 @@
 /* SSL CONFIG */
 // #include "ssl_brokers/my_azure.h"
 // #include "ssl_brokers/testmosquitto.h"
+#include "ssl_brokers/gcp.h"
 
-#define INTERVAL_BETWEEN_MQTT_PACKETS 15000 // ms
+#define INTERVAL_BETWEEN_MQTT_PACKETS 10000 // ms
 
 // Humidity/temperature
 #define DHT_TYPE DHT11
@@ -43,8 +44,7 @@
 
 struct Broker_Config
 {
-    const char *IP = LOCAL_BROKER;
-    // const char *IP = BROKER;
+    const char *IP = BROKER_IP;
     int port = BROKER_PORT;
     const char *topic = TOPIC;
 };
@@ -77,8 +77,8 @@ Broker_Config broker;
 WIFI_Config wifi;
 Schedules schedule;
 
-WiFiClient wifiClient;
-// WiFiClientSecure wifiClient;
+// WiFiClient wifiClient;
+WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
@@ -92,7 +92,6 @@ void wifi_init(const char *ssid, const char *password);
 State check_if_end_of_bluetooth();
 
 void handle_characteristic_changes();
-void print_characteristic_values();
 
 void setup()
 {
@@ -111,9 +110,10 @@ void loop()
         Serial.println("[STATE] Initialization");
         if (
             sizeof(bleData.senderIdString) &&
-            !isArrayEmpty(bleData.senderToken, sizeof(bleData.senderToken)) &&
-            !isArrayEmpty(bleData.contactId, sizeof(bleData.contactId)) &&
+            bleData.contactIdBase64Encoded[0] != '\0' &&
+            bleData.senderTokenBase64Encoded[0] != '\0' &&
             !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
+
         {
             // then we can skip bluetooth step and directly start sending data
             state = SEND_DATA;
@@ -145,7 +145,6 @@ void loop()
                     handle_characteristic_changes();
                     if (bleData.senderTokenReady && bleData.senderIdReady && bleData.encKeyReady && bleData.contactIdReady)
                     {
-                        print_characteristic_values();
 
                         state = check_if_end_of_bluetooth();
                         if (state == SETUP_MQTT)
@@ -165,11 +164,12 @@ void loop()
     case SETUP_MQTT:
         Serial.println("[STATE] SETUP MQTT");
 
-        mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderTokenHexString, bleData.contactIdHexString);
+        mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderTokenBase64Encoded, bleData.contactIdBase64Encoded);
+        // mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderToken, bleData.contactId);
 
         wifi_init(wifi.ssid, wifi.pass);
         // TLS configuration  : client cert and client key to come
-        // wifiClient.setCACert(CA_CERT);
+        wifiClient.setCACert(CA_CERT);
         // wifiClient.setCertificate(CLIENT_CERT);
         // wifiClient.setPrivateKey(CLIENT_KEY);
 
@@ -179,12 +179,12 @@ void loop()
         break;
 
     case READ_SENSORS_DATA:
-        Serial.println();
+        Serial.println("------------------------------------------------------------------------");
         Serial.println("[STATE] READING SENSORS");
         // messageCount += 1;
         mqttClient.loop();
 
-        //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}} }
+        //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}}}
 
         temperatureString = String(dht.readTemperature(), 1);
         roundedTemperature = temperatureString.toFloat();
@@ -196,7 +196,6 @@ void loop()
         jsonSensorDataSize = jsonSensorDataStr.length();
 
         jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
-        Serial.println();
         // serializeJson(json_sensorsData, Serial);
         if (usePacketEncryption)
         {
@@ -230,7 +229,7 @@ void loop()
 
         if (usePacketEncryption)
         {
-            // to the full JSON,we add the encrypted part of the data : {"*":{"measureValue":{"value":"22","unit":"°C"}}}
+            // to the full JSON,we add the encrypted part of the data : {"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}} }
 
             memcpy(encryptData.encryptedSelf, encryptData.iv, IV_SIZE);
             memcpy(encryptData.encryptedSelf + IV_SIZE, encryptData.ciphertext, encryptData.adjustedSize);
@@ -259,8 +258,7 @@ void loop()
         break;
 
     case SEND_DATA:
-        Serial.println();
-        Serial.println("[STATE] SEND DATA TO BROKER");
+        Serial.println("[STATE] SENDING DATA TO BROKER");
         mqttClient.loop();
 
         if (mqttPacketSize > MQTT_MAX_PACKET_SIZE)
@@ -273,19 +271,20 @@ void loop()
         {
             if (mqttClient.connect(ICURE_MQTT_ID))
             {
-                Serial.print("Connected, mqtt_mqttClient state: ");
+                Serial.print("[INFO] Mqtt client connected,state: ");
                 Serial.println(mqttClient.state());
-                // serializeJson(json_fullData, Serial);
-                Serial.print("Temperature : ");
+                serializeJson(json_fullData, Serial);
+                Serial.print("[INFO] Device temp sensor : ");
                 Serial.println(roundedTemperature);
+                Serial.println("------------------------------------------------------------------------");
                 mqtt_publish(mqttClient, broker.topic, mqttPacket, mqttPacketSize);
             }
             else
             {
-                Serial.println("Connected failed!  mqtt_mqttClient state:");
+                Serial.println("[ERROR]Not connected to broker! state:");
                 Serial.print(mqttClient.state());
                 Serial.println("WiFiClientSecure mqttClient state:");
-                char lastError[100];
+                // char lastError[100];
                 // wifiClient.lastError(lastError, 100); // Get the last error for WiFiClientSecure
                 // Serial.print(lastError);
                 // free(lastError);
@@ -345,10 +344,10 @@ bool bluetooth_init()
 
 void wifi_init(const char *ssid, const char *password)
 {
-    Serial.print("Attempting to connect to SSID: ");
-    Serial.println(ssid);
+    // Serial.print("Attempting to connect to SSID: ");
+    // Serial.println(ssid);
     WiFi.begin(ssid, password);
-
+    Serial.print("[INFO]");
     // attempt to connect to Wifi network:
     while (WiFi.status() != WL_CONNECTED)
     {
@@ -356,8 +355,7 @@ void wifi_init(const char *ssid, const char *password)
         // wait 1 second for re-trying
         delay(1000);
     }
-
-    Serial.print("Connected to ");
+    Serial.print("connected to ");
     Serial.println(ssid);
 }
 
@@ -365,8 +363,8 @@ State check_if_end_of_bluetooth()
 {
     if (
         sizeof(bleData.senderIdString) &&
-        !isArrayEmpty(bleData.senderToken, sizeof(bleData.senderToken)) &&
-        !isArrayEmpty(bleData.contactId, sizeof(bleData.contactId)) &&
+        bleData.contactIdBase64Encoded[0] != '\0' &&
+        bleData.senderTokenBase64Encoded[0] != '\0' &&
         !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
     {
         Serial.println("[INFO] BLE configuratin finished");
@@ -395,29 +393,25 @@ void handle_characteristic_changes()
     }
     if (senderIdCharacteristic.written())
     {
-        // const byte *receivedToken = senderIdCharacteristic.value();
-        // memcpy(bleData.senderId, receivedToken, 64);
-        // bleData.senderIdString = byteToHexString(bleData.senderId, sizeof(bleData.senderId));
-
         if (bleData.senderIdString.length() == 0)
         {
             bleData.senderIdString = senderIdCharacteristic.value();
+            Serial.println(bleData.senderIdString);
         }
-
         bleData.senderIdReady = true;
     }
     if (senderTokenCharacteristic.written())
     {
         const byte *receivedToken = senderTokenCharacteristic.value();
-        memcpy(bleData.senderToken, receivedToken, 16);
-        bleData.senderTokenHexString = byteToHexString(bleData.senderToken, sizeof(bleData.senderToken));
+        int encodedSize = Base64.encode(bleData.senderTokenBase64Encoded, (char *)receivedToken, 16);
+        bleData.senderTokenBase64Encoded[24] = '\0';
         bleData.senderTokenReady = true;
     }
     if (contactIdCharacteristic.written())
     {
         const byte *receivedUuid = contactIdCharacteristic.value();
-        memcpy(bleData.contactId, receivedUuid, 16);
-        bleData.contactIdHexString = byteToHexString(bleData.contactId, sizeof(bleData.contactId));
+        Base64.encode(bleData.contactIdBase64Encoded, (char *)receivedUuid, 16);
+        bleData.contactIdBase64Encoded[24] = '\0';
         bleData.contactIdReady = true;
     }
     if (keyCharacteristic.written())
@@ -427,22 +421,4 @@ void handle_characteristic_changes()
         bleData.encKeyHexString = byteToHexString(bleData.encKey, sizeof(bleData.encKey));
         bleData.encKeyReady = true;
     }
-}
-void print_characteristic_values()
-{
-    Serial.println("");
-
-    Serial.print("contact Id");
-    Serial.println(bleData.contactIdHexString);
-
-    Serial.print("senderUuid ");
-    Serial.println(bleData.senderIdString);
-
-    Serial.print("token");
-    Serial.println(bleData.senderTokenHexString);
-
-    Serial.print("encryption key ");
-    Serial.println(bleData.encKeyHexString);
-
-    Serial.println("");
 }

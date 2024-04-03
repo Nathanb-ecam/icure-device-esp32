@@ -27,12 +27,14 @@ struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
     bool senderIdReady = false;
     String senderIdString;
 
-    byte contactId[16];
-    String contactIdHexString;
+    // byte contactId[16];
+    // String contactIdHexString;
+    char contactIdBase64Encoded[25];
     bool contactIdReady = false;
 
-    byte senderToken[16];
-    String senderTokenHexString;
+    // byte senderToken[16];
+    // String senderTokenHexString;
+    char senderTokenBase64Encoded[25];
     bool senderTokenReady = false;
 
     byte encKey[AES_KEY_SIZE];

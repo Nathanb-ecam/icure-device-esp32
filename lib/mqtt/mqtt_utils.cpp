@@ -1,7 +1,7 @@
 #include <mqtt_utils.h>
 
-// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte *senderToken, byte *contactId)
-void mqtt_packet_init(JsonDocument &json_data, String senderId, String senderToken, String contactId)
+// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte senderToken[16], byte contactId[16])
+void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25])
 {
     json_data["uid"] = senderId;
 
@@ -25,14 +25,14 @@ void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *m
 {
     while (!client.connected())
     {
-        Serial.println("Attempting MQTT connection...");
+        Serial.println("[INFO] Attempting MQTT reconnection...");
         if (client.connect(mqttId, mqttUser, mqttPass))
         {
-            Serial.println("Connected to MQTT broker");
+            Serial.println("[INFO] Connected to MQTT broker");
         }
         else
         {
-            Serial.print("Failed to connect to MQTT broker, rc=");
+            Serial.print("[ERROR] Failed to connect to MQTT broker, rc=");
             Serial.print(client.state());
             Serial.println(" Trying again in 5 seconds...");
             delay(5000);
@@ -44,9 +44,9 @@ void mqtt_broker_init(PubSubClient &client, const char *broker, int port, char *
 {
     client.setServer(broker, port);
     client.connect(mqttId, mqttUsername, mqttPassword);
-    Serial.print("[INFO] Using broker ");
+    Serial.print("[INFO] Using broker : ");
     Serial.print(broker);
-    Serial.print(", port");
+    Serial.print(", port : ");
     Serial.println(port);
 }
 
