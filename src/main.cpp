@@ -34,7 +34,7 @@
 // #include "ssl_brokers/testmosquitto.h"
 #include "ssl_brokers/gcp.h"
 
-#define INTERVAL_BETWEEN_MQTT_PACKETS 10000 // ms
+// #define INTERVAL_BETWEEN_MQTT_PACKETS 10000 // ms
 
 // Humidity/temperature
 #define DHT_TYPE DHT11
@@ -46,7 +46,7 @@ struct Broker_Config
 {
     const char *IP = BROKER_IP;
     int port = BROKER_PORT;
-    const char *topic = TOPIC;
+    const char commandTopic[15] = KRAKEN_COMMANDS_TOPIC; // to listen for kraken asking to limit message frequency
 };
 
 StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_fullData;
@@ -77,17 +77,21 @@ Broker_Config broker;
 WIFI_Config wifi;
 Schedules schedule;
 
+unsigned long INTERVAL_BETWEEN_MQTT_PACKETS = 10000; // ms
+
 // WiFiClient wifiClient;
 WiFiClientSecure wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
 Encryption_Data encryptData;
-State state = INIT;
+State state = SETUP_MQTT;
 
+bool successfullyInitialized = false;
 bool usePacketEncryption = USE_PACKET_ENCRYPTION;
 
 bool bluetooth_init();
+void onMessageReceived(const char topic[], byte *payload, unsigned int length);
 void wifi_init(const char *ssid, const char *password);
 State check_if_end_of_bluetooth();
 
@@ -143,7 +147,7 @@ void loop()
                 while (central.connected())
                 {
                     handle_characteristic_changes();
-                    if (bleData.senderTokenReady && bleData.senderIdReady && bleData.encKeyReady && bleData.contactIdReady)
+                    if (bleData.senderTokenReady && bleData.senderIdReady && bleData.encKeyReady && bleData.contactIdReady && bleData.upstreamTopicReady)
                     {
 
                         state = check_if_end_of_bluetooth();
@@ -163,17 +167,21 @@ void loop()
 
     case SETUP_MQTT:
         Serial.println("[STATE] SETUP MQTT");
-
         mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderTokenBase64Encoded, bleData.contactIdBase64Encoded);
-        // mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderToken, bleData.contactId);
-
         wifi_init(wifi.ssid, wifi.pass);
+
         // TLS configuration  : client cert and client key to come
         wifiClient.setCACert(CA_CERT);
         // wifiClient.setCertificate(CLIENT_CERT);
         // wifiClient.setPrivateKey(CLIENT_KEY);
 
-        mqtt_broker_init(mqttClient, broker.IP, broker.port, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD);
+        successfullyInitialized = mqtt_broker_init(mqttClient, BROKER_IP, BROKER_PORT, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, KRAKEN_COMMANDS_TOPIC);
+        if (!successfullyInitialized)
+        {
+            state = ERROR;
+        }
+
+        setCallback(onMessageReceived);
 
         state = HANDLE_WAIT;
         break;
@@ -192,7 +200,7 @@ void loop()
         json_sensorsData["content"]["*"]["measureValue"]["unit"] = "°C";
         json_sensorsData["content"]["*"]["measureValue"]["comment"] = "temperature";
 
-        serializeJson(json_sensorsData, jsonSensorDataStr);
+        // serializeJson(json_sensorsData, jsonSensorDataStr);
         jsonSensorDataSize = jsonSensorDataStr.length();
 
         jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
@@ -248,7 +256,7 @@ void loop()
         }
 
         // serializeJson(json_fullData, Serial);
-        serializeJson(json_fullData, jsonFullDataStr);
+        // serializeJson(json_fullData, jsonFullDataStr);
 
         jsonFullDataSize = jsonFullDataStr.length();
         jsonFullDataStr.getBytes(mqttPacket, jsonFullDataSize + 1);
@@ -269,26 +277,30 @@ void loop()
         }
         else
         {
-            if (mqttClient.connect(ICURE_MQTT_ID))
+            if (!mqttClient.connected())
             {
-                Serial.print("[INFO] Mqtt client connected,state: ");
-                Serial.println(mqttClient.state());
-                serializeJson(json_fullData, Serial);
-                Serial.print("[INFO] Device temp sensor : ");
-                Serial.println(roundedTemperature);
-                Serial.println("------------------------------------------------------------------------");
-                mqtt_publish(mqttClient, broker.topic, mqttPacket, mqttPacketSize);
-            }
-            else
-            {
-                Serial.println("[ERROR]Not connected to broker! state:");
-                Serial.print(mqttClient.state());
-                Serial.println("WiFiClientSecure mqttClient state:");
-                // char lastError[100];
-                // wifiClient.lastError(lastError, 100); // Get the last error for WiFiClientSecure
-                // Serial.print(lastError);
-                // free(lastError);
-                reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD);
+                if (mqttClient.connect(ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD))
+                {
+                    Serial.print("[INFO] Mqtt client connected,state: ");
+                    pubSubError(mqttClient.state());
+                    // serializeJson(json_fullData, Serial);
+                    Serial.print("[INFO] Device temp sensor : ");
+                    Serial.println(roundedTemperature);
+                    Serial.println("------------------------------------------------------------------------");
+                    mqttClient.subscribe(KRAKEN_COMMANDS_TOPIC);
+                    mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
+                }
+                else
+                {
+                    Serial.println("[ERROR]Not connected to broker! state:");
+                    pubSubError(mqttClient.state());
+                    Serial.println("WiFiClientSecure mqttClient state:");
+                    // char lastError[100];
+                    // wifiClient.lastError(lastError, 100); // Get the last error for WiFiClientSecure
+                    // Serial.print(lastError);
+                    // free(lastError);
+                    reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, KRAKEN_COMMANDS_TOPIC);
+                }
             }
         }
 
@@ -332,6 +344,7 @@ bool bluetooth_init()
     icureService.addCharacteristic(senderIdCharacteristic);
     icureService.addCharacteristic(senderTokenCharacteristic);
     icureService.addCharacteristic(keyCharacteristic);
+    icureService.addCharacteristic(topicCharacteristic);
     icureService.addCharacteristic(statusCharacteristic);
     icureService.addCharacteristic(testCharacteristic);
     BLE.addService(icureService);
@@ -407,6 +420,13 @@ void handle_characteristic_changes()
         bleData.senderTokenBase64Encoded[24] = '\0';
         bleData.senderTokenReady = true;
     }
+    if (topicCharacteristic.written())
+    {
+        bleData.upstreamTopic = topicCharacteristic.value();
+        bleData.upstreamTopicReady = true;
+        Serial.print("topic ");
+        Serial.println(bleData.upstreamTopic);
+    }
     if (contactIdCharacteristic.written())
     {
         const byte *receivedUuid = contactIdCharacteristic.value();
@@ -422,3 +442,52 @@ void handle_characteristic_changes()
         bleData.encKeyReady = true;
     }
 }
+
+void onMessageReceived(const char topic[], byte *payload, unsigned int length)
+{
+    Serial.print("Received message from topic");
+    Serial.println(topic);
+    Serial.print("Payload: ");
+    for (int i = 0; i < length; i++)
+    {
+
+        Serial.print((char)payload[i]);
+    }
+    Serial.println(payload[0], HEX);
+    if (length > 0)
+    {
+        switch ((char)payload[0])
+        {
+        case 0x30:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 10000;
+            Serial.println("One every 10 secs");
+            break;
+        case 0x31:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 20000;
+            Serial.println("One every 20 secs");
+            break;
+        case 0x32:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 30000;
+            Serial.println("One every 30 secs");
+            break;
+        case 0x33:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 40000;
+            Serial.println("One every 40 secs");
+            break;
+        case 0x34:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 50000;
+            Serial.println("One every 50 secs");
+            break;
+        case 0x35:
+            INTERVAL_BETWEEN_MQTT_PACKETS = 60000;
+            Serial.println("One every minute");
+            break;
+        default:
+            Serial.println("Received some shit");
+            break;
+        }
+    }
+
+    Serial.println();
+}
+≤

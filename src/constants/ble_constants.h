@@ -12,6 +12,8 @@ BLEService icureService(BLE_SVC_UUID);
 BLEStringCharacteristic testCharacteristic(BLE_TEST_UUID, BLEWrite, 5); // android app can try to turn on arduino built in led
 // sender uuid : 128 bit
 BLEStringCharacteristic senderIdCharacteristic(BLE_SENDER_ID_UUID, BLEWrite, 64);
+// topic to publish the messages a uuid formatted string is 36 bytes (with the "-" included)
+BLEStringCharacteristic topicCharacteristic(BLE_TOPIC_UUID, BLEWrite, 48);
 // sender token
 BLECharacteristic senderTokenCharacteristic(BLE_SENDER_TOKEN_UUID, BLEWrite, 16);
 // contact id
@@ -23,18 +25,38 @@ BLEByteCharacteristic statusCharacteristic(BLE_STATUS_UUID, BLENotify); // BLERe
 
 struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
+
+    String upstreamTopic = "test";
+    bool upstreamTopicReady = false;
+
     byte senderId[32];
     bool senderIdReady = false;
     String senderIdString;
 
     // byte contactId[16];
     // String contactIdHexString;
-    char contactIdBase64Encoded[25];
+
+    // char contactIdBase64Encoded[25];
+    // FOR TESTING IF state is initialized to SETUP_MQTT (to skip android configuration)
+    char contactIdBase64Encoded[25] = {
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00};
     bool contactIdReady = false;
 
     // byte senderToken[16];
     // String senderTokenHexString;
-    char senderTokenBase64Encoded[25];
+
+    // char senderTokenBase64Encoded[25];
+    // FOR TESTING IF state is initialized to SETUP_MQTT (to skip android configuration)
+    char senderTokenBase64Encoded[25] = {
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00};
     bool senderTokenReady = false;
 
     byte encKey[AES_KEY_SIZE];

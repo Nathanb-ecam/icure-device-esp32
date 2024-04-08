@@ -1,5 +1,7 @@
 #include <mqtt_utils.h>
 
+static MessageCallback messageCallback = NULL;
+
 // void mqtt_packet_init(JsonDocument &json_data, String senderId, byte senderToken[16], byte contactId[16])
 void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25])
 {
@@ -21,7 +23,7 @@ void printPacket(byte *data, size_t dataSize)
     Serial.println();
 }
 
-void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *mqttUser, const char *mqttPass)
+void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *mqttUser, const char *mqttPass, const char *topic)
 {
     while (!client.connected())
     {
@@ -29,6 +31,9 @@ void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *m
         if (client.connect(mqttId, mqttUser, mqttPass))
         {
             Serial.println("[INFO] Connected to MQTT broker");
+            client.subscribe(topic);
+            Serial.print("[INFO] Subscribed to ");
+            Serial.println(topic);
         }
         else
         {
@@ -40,14 +45,49 @@ void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *m
     }
 }
 
-void mqtt_broker_init(PubSubClient &client, const char *broker, int port, char *mqttId, const char *mqttUsername, const char *mqttPassword)
+void callback(const char topic[], byte *payload, unsigned int length)
+{
+    // Serial.println("Received message:");
+    // Serial.print("Topic: ");
+
+    // Serial.print("Payload: ");
+    // for (int i = 0; i < length; i++)
+    // {
+    //     Serial.print((char)payload[i]);
+    // }
+    // Serial.println();
+    if (messageCallback)
+    {
+        messageCallback(topic, payload, length);
+    }
+}
+
+void setCallback(MessageCallback callback)
+{
+    messageCallback = callback;
+}
+
+bool mqtt_broker_init(PubSubClient &client, const char *broker, int port, char *mqttId, const char *mqttUsername, const char *mqttPassword, const char *topic)
 {
     client.setServer(broker, port);
-    client.connect(mqttId, mqttUsername, mqttPassword);
-    Serial.print("[INFO] Using broker : ");
-    Serial.print(broker);
-    Serial.print(", port : ");
-    Serial.println(port);
+    client.setCallback(callback);
+    if (client.connect(mqttId, mqttUsername, mqttPassword))
+    {
+        Serial.println("[INFO] Connected to MQTT broker");
+        client.subscribe(topic);
+        Serial.print("[INFO] Using broker : ");
+        Serial.print(broker);
+        Serial.print(", port : ");
+        Serial.println(port);
+        Serial.print("[INFO] Subscribed to ");
+        Serial.println(topic);
+        return true;
+    }
+    else
+    {
+        Serial.println("[ERROR] Failed to connect to MQTT broker");
+        return false;
+    }
 }
 
 void mqtt_publish(PubSubClient &client, const char topic[], byte *packetBytes, size_t packetSize)
@@ -68,4 +108,28 @@ void mqtt_publish(PubSubClient &client, const char topic[], byte *packetBytes, s
 
     // DEBUG
     // printPacket(packetBytes, packetSize);
+}
+
+void pubSubError(int8_t errCode)
+{
+    if (errCode == MQTT_CONNECTION_TIMEOUT)
+        Serial.println("Connection tiemout");
+    else if (errCode == MQTT_CONNECTION_LOST)
+        Serial.println("Connection lost");
+    else if (errCode == MQTT_CONNECT_FAILED)
+        Serial.println("Connect failed");
+    else if (errCode == MQTT_DISCONNECTED)
+        Serial.println("Disconnected");
+    else if (errCode == MQTT_CONNECTED)
+        Serial.println("Connected");
+    else if (errCode == MQTT_CONNECT_BAD_PROTOCOL)
+        Serial.println("Connect bad protocol");
+    else if (errCode == MQTT_CONNECT_BAD_CLIENT_ID)
+        Serial.println("Connect bad Client-ID");
+    else if (errCode == MQTT_CONNECT_UNAVAILABLE)
+        Serial.println("Connect unavailable");
+    else if (errCode == MQTT_CONNECT_BAD_CREDENTIALS)
+        Serial.println("Connect bad credentials");
+    else if (errCode == MQTT_CONNECT_UNAUTHORIZED)
+        Serial.println("Connect unauthorized");
 }
