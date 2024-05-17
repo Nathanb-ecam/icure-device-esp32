@@ -5,10 +5,11 @@
 #include <PubSubClient.h>
 
 typedef void (*MessageCallback)(const char *, byte *, unsigned int);
+
 void setCallback(MessageCallback callback);
 
-// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte senderToken[16], byte contactId[16]);
-void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25]);
+// void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25]);
+void mqtt_packet_init(JsonDocument &json_data, String senderId, String senderToken, char contactId[25]);
 
 void printPacket(byte *data, size_t dataSize);
 

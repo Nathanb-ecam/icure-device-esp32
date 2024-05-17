@@ -84,11 +84,11 @@ void testIsUuidNotEmpty(void)
 {
     byte uuidNotEmpty[] = {0x01, 0x02, 0x03};
     size_t sizeNotEmpty = sizeof(uuidNotEmpty);
-    TEST_ASSERT_TRUE(isUuidNotEmpty(uuidNotEmpty, sizeNotEmpty));
+    TEST_ASSERT_TRUE(!isArrayEmpty(uuidNotEmpty, sizeNotEmpty));
 
     byte uuidEmpty[] = {0x00, 0x00, 0x00};
     size_t sizeEmpty = sizeof(uuidEmpty);
-    TEST_ASSERT_FALSE(isUuidNotEmpty(uuidEmpty, sizeEmpty));
+    TEST_ASSERT_FALSE(!isArrayEmpty(uuidEmpty, sizeEmpty));
 }
 
 void setup()

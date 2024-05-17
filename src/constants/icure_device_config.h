@@ -1,7 +1,7 @@
 #ifndef ICURE_DEVICE_CONFIG_H
 #define ICURE_DEVICE_CONFIG_H
 
-#include <secrets.h>
+#include <device_global_config/secrets.h>
 
 enum State
 {

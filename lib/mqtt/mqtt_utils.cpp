@@ -2,8 +2,8 @@
 
 static MessageCallback messageCallback = NULL;
 
-// void mqtt_packet_init(JsonDocument &json_data, String senderId, byte senderToken[16], byte contactId[16])
-void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25])
+// void mqtt_packet_init(JsonDocument &json_data, String senderId, char senderToken[25], char contactId[25])
+void mqtt_packet_init(JsonDocument &json_data, String senderId, String senderToken, char contactId[25])
 {
     json_data["uid"] = senderId;
 
@@ -47,15 +47,6 @@ void reconnect_to_broker(PubSubClient &client, const char *mqttId, const char *m
 
 void callback(const char topic[], byte *payload, unsigned int length)
 {
-    // Serial.println("Received message:");
-    // Serial.print("Topic: ");
-
-    // Serial.print("Payload: ");
-    // for (int i = 0; i < length; i++)
-    // {
-    //     Serial.print((char)payload[i]);
-    // }
-    // Serial.println();
     if (messageCallback)
     {
         messageCallback(topic, payload, length);
@@ -92,22 +83,16 @@ bool mqtt_broker_init(PubSubClient &client, const char *broker, int port, char *
 
 void mqtt_publish(PubSubClient &client, const char topic[], byte *packetBytes, size_t packetSize)
 {
-
+    // printPacket(packetBytes, packetSize);
     // Serial.println("Publish");
     client.beginPublish(topic, packetSize, false);
+    // Serial.print("Mqtt packet size:");
     // Serial.println(packetSize);
     for (int i = 0; i < packetSize; i++)
     {
         client.write(packetBytes[i]);
     }
-    // for (int i = 0; i < encryptedDataSize; i++)
-    // {
-    //     client.write(encryptedData[i]);
-    // }
     client.endPublish();
-
-    // DEBUG
-    // printPacket(packetBytes, packetSize);
 }
 
 void pubSubError(int8_t errCode)

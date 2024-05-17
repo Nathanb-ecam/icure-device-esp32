@@ -23,16 +23,14 @@
 #include "led_utils.h"
 
 /* CONSTANTS */
-#include "secrets.h"
+#include "device_global_config/secrets.h"
 #include "constants/icure_device_config.h"
 #include "constants/ble_constants.h"
 #include "constants/crypto_constants.h"
 #include "constants/mqtt_constants.h"
 
-/* SSL CONFIG */
-// #include "ssl_brokers/my_azure.h"
-// #include "ssl_brokers/testmosquitto.h"
-#include "ssl_brokers/gcp.h"
+/* SSL MQTT BROKER CONFIG */
+#include "device_global_config/broker_config.h"
 
 // #define INTERVAL_BETWEEN_MQTT_PACKETS 10000 // ms
 
@@ -46,16 +44,21 @@ struct Broker_Config
 {
     const char *IP = BROKER_IP;
     int port = BROKER_PORT;
-    const char commandTopic[15] = KRAKEN_COMMANDS_TOPIC; // to listen for kraken asking to limit message frequency
+    const char commandTopic[15] = INCOMING_COMMANDS_TOPIC; // to listen for kraken asking to limit message frequency
 };
 
-StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_fullData;
+/*  JSON FOR MESSAGES SENT TO THE BROKER */
+StaticJsonDocument<MQTT_MAX_OUTGOING_PACKET_SIZE> json_fullData;
 String jsonFullDataStr;
 size_t jsonFullDataSize;
 
-StaticJsonDocument<MQTT_MAX_PACKET_SIZE> json_sensorsData;
+StaticJsonDocument<MQTT_MAX_OUTGOING_PACKET_SIZE> json_sensorsData;
 String jsonSensorDataStr;
 size_t jsonSensorDataSize;
+
+/* JSON FOR INCOMMING MESSAGES : BIDIRECTIONNAL COMUNICATION TO RECEIVE COMMANDS FROM BACKEND */
+
+StaticJsonDocument<MQTT_MAX_INCOMING_PACKET_SIZE> incommingMessageDoc;
 
 /* SENSORS */
 DHT dht(DHTPIN, DHT_TYPE);
@@ -64,12 +67,12 @@ String temperatureString;
 float roundedTemperature;
 
 /* FULL DATA TO BE SENT */
-byte mqttPacket[MQTT_MAX_PACKET_SIZE];
+byte mqttPacket[MQTT_MAX_OUTGOING_PACKET_SIZE];
 size_t mqttPacketSize;
 
-// USED ONLY IF UsePacketEncrypt is set to false
-byte nonEncryptedSelf[MQTT_MAX_PACKET_SIZE - MAX_AUTH_SIZE]; // +16 since there is IV
-size_t nonEncryptedSelfSize;                                 // adjusted size + IV size
+// USED ONLY IF UsePacketEncrypt from "device_globam_config/secrets.h" is set to false
+byte nonEncryptedSelf[MQTT_MAX_OUTGOING_PACKET_SIZE - MAX_AUTH_SIZE]; // +16 since there is IV
+size_t nonEncryptedSelfSize;                                          // adjusted size + IV size
 // unsigned long messageCount = 0;
 
 BLE_Data bleData;
@@ -85,7 +88,8 @@ PubSubClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
 Encryption_Data encryptData;
-State state = SETUP_MQTT;
+State state = INIT;
+// State state = SETUP_MQTT;
 
 bool successfullyInitialized = false;
 bool usePacketEncryption = USE_PACKET_ENCRYPTION;
@@ -94,6 +98,8 @@ bool bluetooth_init();
 void onMessageReceived(const char topic[], byte *payload, unsigned int length);
 void wifi_init(const char *ssid, const char *password);
 State check_if_end_of_bluetooth();
+
+bool patient_informations_ready();
 
 void handle_characteristic_changes();
 
@@ -112,12 +118,8 @@ void loop()
     {
     case INIT:
         Serial.println("[STATE] Initialization");
-        if (
-            sizeof(bleData.senderIdString) &&
-            bleData.contactIdBase64Encoded[0] != '\0' &&
-            bleData.senderTokenBase64Encoded[0] != '\0' &&
-            !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
-
+        bleData.patientDataReady = patient_informations_ready();
+        if (bleData.patientDataReady)
         {
             // then we can skip bluetooth step and directly start sending data
             state = SEND_DATA;
@@ -167,7 +169,8 @@ void loop()
 
     case SETUP_MQTT:
         Serial.println("[STATE] SETUP MQTT");
-        mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderTokenBase64Encoded, bleData.contactIdBase64Encoded);
+        mqtt_packet_init(json_fullData, bleData.senderIdString, bleData.senderTokenString, bleData.contactIdBase64Encoded);
+
         wifi_init(wifi.ssid, wifi.pass);
 
         // TLS configuration  : client cert and client key to come
@@ -175,7 +178,7 @@ void loop()
         // wifiClient.setCertificate(CLIENT_CERT);
         // wifiClient.setPrivateKey(CLIENT_KEY);
 
-        successfullyInitialized = mqtt_broker_init(mqttClient, BROKER_IP, BROKER_PORT, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, KRAKEN_COMMANDS_TOPIC);
+        successfullyInitialized = mqtt_broker_init(mqttClient, BROKER_IP, BROKER_PORT, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
         if (!successfullyInitialized)
         {
             state = ERROR;
@@ -200,11 +203,11 @@ void loop()
         json_sensorsData["content"]["*"]["measureValue"]["unit"] = "°C";
         json_sensorsData["content"]["*"]["measureValue"]["comment"] = "temperature";
 
-        // serializeJson(json_sensorsData, jsonSensorDataStr);
+        serializeJson(json_sensorsData, jsonSensorDataStr);
         jsonSensorDataSize = jsonSensorDataStr.length();
 
         jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
-        // serializeJson(json_sensorsData, Serial);
+
         if (usePacketEncryption)
         {
             state = ENCRYPT_DATA;
@@ -256,7 +259,7 @@ void loop()
         }
 
         // serializeJson(json_fullData, Serial);
-        // serializeJson(json_fullData, jsonFullDataStr);
+        serializeJson(json_fullData, jsonFullDataStr);
 
         jsonFullDataSize = jsonFullDataStr.length();
         jsonFullDataStr.getBytes(mqttPacket, jsonFullDataSize + 1);
@@ -269,7 +272,7 @@ void loop()
         Serial.println("[STATE] SENDING DATA TO BROKER");
         mqttClient.loop();
 
-        if (mqttPacketSize > MQTT_MAX_PACKET_SIZE)
+        if (mqttPacketSize > MQTT_MAX_OUTGOING_PACKET_SIZE)
         {
             Serial.println("[ERROR] Payload too big, too many bytes to send");
             state = ERROR;
@@ -287,8 +290,8 @@ void loop()
                     Serial.print("[INFO] Device temp sensor : ");
                     Serial.println(roundedTemperature);
                     Serial.println("------------------------------------------------------------------------");
-                    mqttClient.subscribe(KRAKEN_COMMANDS_TOPIC);
-                    mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
+                    mqttClient.subscribe(INCOMING_COMMANDS_TOPIC);
+                    // mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
                 }
                 else
                 {
@@ -296,12 +299,15 @@ void loop()
                     pubSubError(mqttClient.state());
                     Serial.println("WiFiClientSecure mqttClient state:");
                     // char lastError[100];
-                    // wifiClient.lastError(lastError, 100); // Get the last error for WiFiClientSecure
+                    // wifiClient.lastError(lastError, 100);
                     // Serial.print(lastError);
                     // free(lastError);
-                    reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, KRAKEN_COMMANDS_TOPIC);
+                    reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
                 }
             }
+            mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
+            Serial.print("Publishing topic: ");
+            Serial.println(bleData.upstreamTopic.c_str());
         }
 
         state = HANDLE_WAIT;
@@ -372,13 +378,24 @@ void wifi_init(const char *ssid, const char *password)
     Serial.println(ssid);
 }
 
-State check_if_end_of_bluetooth()
+bool patient_informations_ready()
 {
     if (
         sizeof(bleData.senderIdString) &&
+        sizeof(bleData.senderTokenString) &&
+        sizeof(bleData.upstreamTopic) &&
         bleData.contactIdBase64Encoded[0] != '\0' &&
-        bleData.senderTokenBase64Encoded[0] != '\0' &&
         !isArrayEmpty(bleData.encKey, sizeof(bleData.encKey)))
+    {
+        return true;
+    }
+    return false;
+}
+
+State check_if_end_of_bluetooth()
+{
+    bleData.patientDataReady = patient_informations_ready();
+    if (bleData.patientDataReady)
     {
         Serial.println("[INFO] BLE configuratin finished");
 
@@ -406,18 +423,21 @@ void handle_characteristic_changes()
     }
     if (senderIdCharacteristic.written())
     {
-        if (bleData.senderIdString.length() == 0)
-        {
-            bleData.senderIdString = senderIdCharacteristic.value();
-            Serial.println(bleData.senderIdString);
-        }
+        // if (bleData.senderIdString.length() == 0)
+        // {
+        bleData.senderIdString = senderIdCharacteristic.value();
+        Serial.println(bleData.senderIdString);
+        // }
         bleData.senderIdReady = true;
     }
     if (senderTokenCharacteristic.written())
     {
-        const byte *receivedToken = senderTokenCharacteristic.value();
-        int encodedSize = Base64.encode(bleData.senderTokenBase64Encoded, (char *)receivedToken, 16);
-        bleData.senderTokenBase64Encoded[24] = '\0';
+        // if(bleData.senderTokenString.length() == 0){
+        //     bleData.senderTokenString = senderTokenCharacteristic.value();
+        // }
+
+        bleData.senderTokenString = senderTokenCharacteristic.value();
+        Serial.println(bleData.senderTokenString);
         bleData.senderTokenReady = true;
     }
     if (topicCharacteristic.written())
@@ -432,6 +452,7 @@ void handle_characteristic_changes()
         const byte *receivedUuid = contactIdCharacteristic.value();
         Base64.encode(bleData.contactIdBase64Encoded, (char *)receivedUuid, 16);
         bleData.contactIdBase64Encoded[24] = '\0';
+        Serial.println(bleData.contactIdBase64Encoded);
         bleData.contactIdReady = true;
     }
     if (keyCharacteristic.written())
@@ -439,55 +460,57 @@ void handle_characteristic_changes()
         const byte *receivedKey = keyCharacteristic.value();
         memcpy(bleData.encKey, receivedKey, 32);
         bleData.encKeyHexString = byteToHexString(bleData.encKey, sizeof(bleData.encKey));
+        Serial.println(bleData.encKeyHexString);
         bleData.encKeyReady = true;
     }
 }
 
 void onMessageReceived(const char topic[], byte *payload, unsigned int length)
 {
-    Serial.print("Received message from topic");
+    Serial.print("Received message from topic: ");
     Serial.println(topic);
     Serial.print("Payload: ");
     for (int i = 0; i < length; i++)
     {
-
         Serial.print((char)payload[i]);
     }
-    Serial.println(payload[0], HEX);
-    if (length > 0)
+    // Serial.print("Bytes :");
+    // Serial.println(length);
+
+    char json[length + 1];
+    memcpy(json, payload, length);
+    json[length] = '\0';
+
+    DeserializationError error = deserializeJson(incommingMessageDoc, json);
+
+    if (error)
     {
-        switch ((char)payload[0])
+        Serial.print(F("deserializeJson() failed on incoming message : "));
+        Serial.println(error.f_str());
+        return;
+    }
+
+    if (incommingMessageDoc.containsKey("command"))
+    {
+        const char *command = incommingMessageDoc["command"];
+
+        if (strcmp(command, "reduce") == 0)
         {
-        case 0x30:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 10000;
-            Serial.println("One every 10 secs");
-            break;
-        case 0x31:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 20000;
-            Serial.println("One every 20 secs");
-            break;
-        case 0x32:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 30000;
-            Serial.println("One every 30 secs");
-            break;
-        case 0x33:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 40000;
-            Serial.println("One every 40 secs");
-            break;
-        case 0x34:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 50000;
-            Serial.println("One every 50 secs");
-            break;
-        case 0x35:
-            INTERVAL_BETWEEN_MQTT_PACKETS = 60000;
-            Serial.println("One every minute");
-            break;
-        default:
-            Serial.println("Received some shit");
-            break;
+            Serial.println("Handling reduce command");
         }
+        else if (strcmp(command, "increase") == 0)
+        {
+            Serial.println("Handling increase command");
+        }
+        else
+        {
+            Serial.println("Incoming command not handled");
+        }
+    }
+    else
+    {
+        Serial.println("Uncompatible incoming message content");
     }
 
     Serial.println();
 }
-≤
