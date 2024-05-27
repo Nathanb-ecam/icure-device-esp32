@@ -12,7 +12,7 @@ BLEService icureService(BLE_SVC_UUID);
 BLEStringCharacteristic testCharacteristic(BLE_TEST_UUID, BLEWrite, 5); // android app can try to turn on arduino built in led
 // sender uuid : 128 bit
 BLEStringCharacteristic senderIdCharacteristic(BLE_SENDER_ID_UUID, BLEWrite, 64);
-// topic to publish the messages a uuid formatted string is 36 bytes (with the "-" included)
+// topic to publish the messages
 BLEStringCharacteristic topicCharacteristic(BLE_TOPIC_UUID, BLEWrite, 64);
 // sender token
 BLEStringCharacteristic senderTokenCharacteristic(BLE_SENDER_TOKEN_UUID, BLEWrite, 64);
@@ -27,6 +27,7 @@ struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
     boolean patientDataReady; // should be set to true when the following values are defined : senderId,senderToken, contactId, encKey
 
+    // String upstreamTopic="EU/BE/device";
     String upstreamTopic;
     bool upstreamTopicReady = false;
 

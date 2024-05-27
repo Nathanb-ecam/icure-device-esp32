@@ -8,7 +8,8 @@
 #include <AES.h>
 #include <CBC.h>
 
-#include <PubSubClient.h>
+// #include <PubSubClient.h>
+#include <ArduinoMqttClient.h>
 #include <ArduinoJson.h>
 
 #include <WiFiClientSecure.h>
@@ -84,18 +85,24 @@ unsigned long INTERVAL_BETWEEN_MQTT_PACKETS = 10000; // ms
 
 // WiFiClient wifiClient;
 WiFiClientSecure wifiClient;
-PubSubClient mqttClient(wifiClient);
+// PubSubClient mqttClient(wifiClient);
+MqttClient mqttClient(wifiClient);
 
 CBC<AES256> aes;
 Encryption_Data encryptData;
 State state = INIT;
 // State state = SETUP_MQTT;
 
+
+
+byte incomingPayloadBuffer[MQTT_MAX_INCOMING_PACKET_SIZE]; // Buffer to store the payload bytes
+size_t incomingPayloadLength = 0; 
+
 bool successfullyInitialized = false;
 bool usePacketEncryption = USE_PACKET_ENCRYPTION;
 
 bool bluetooth_init();
-void onMessageReceived(const char topic[], byte *payload, unsigned int length);
+void onMessageReceived(int messageSize);
 void wifi_init(const char *ssid, const char *password);
 State check_if_end_of_bluetooth();
 
@@ -178,13 +185,14 @@ void loop()
         // wifiClient.setCertificate(CLIENT_CERT);
         // wifiClient.setPrivateKey(CLIENT_KEY);
 
+        setCallback(onMessageReceived);
         successfullyInitialized = mqtt_broker_init(mqttClient, BROKER_IP, BROKER_PORT, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
         if (!successfullyInitialized)
         {
             state = ERROR;
         }
 
-        setCallback(onMessageReceived);
+        
 
         state = HANDLE_WAIT;
         break;
@@ -193,7 +201,7 @@ void loop()
         Serial.println("------------------------------------------------------------------------");
         Serial.println("[STATE] READING SENSORS");
         // messageCount += 1;
-        mqttClient.loop();
+        mqttClient.poll();
 
         //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}}}
 
@@ -208,6 +216,7 @@ void loop()
 
         jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
 
+        
         if (usePacketEncryption)
         {
             state = ENCRYPT_DATA;
@@ -221,14 +230,14 @@ void loop()
 
     case ENCRYPT_DATA:
         Serial.println("[STATE] ENCRYPTING DATA");
-        mqttClient.loop();
+        mqttClient.poll();
         encryptData.adjustedSize = find_nearest_block_size(jsonSensorDataSize, AES_BLOCK_SIZE);
         encryptData.encryptedSelfSize = encryptData.adjustedSize + 16; // 16 padding + 16 IV bytes
 
         generate_IV(encryptData.iv);
 
         apply_pkcs7(encryptData.plaintext, encryptData.plaintext_with_padding, jsonSensorDataSize, encryptData.adjustedSize);
-
+        
         encrypt_CBC(&aes, bleData.encKey, encryptData.adjustedSize, encryptData.iv, encryptData.plaintext_with_padding, encryptData.ciphertext, AES_BLOCK_SIZE);
 
         state = PREPARE_MQTT_PACKET;
@@ -236,7 +245,7 @@ void loop()
     case PREPARE_MQTT_PACKET:
         Serial.println("[STATE] PREPARE_MQTT_PACKET");
 
-        mqttClient.loop();
+        mqttClient.poll();
 
         if (usePacketEncryption)
         {
@@ -261,6 +270,8 @@ void loop()
         // serializeJson(json_fullData, Serial);
         serializeJson(json_fullData, jsonFullDataStr);
 
+
+
         jsonFullDataSize = jsonFullDataStr.length();
         jsonFullDataStr.getBytes(mqttPacket, jsonFullDataSize + 1);
         mqttPacketSize = jsonFullDataSize;
@@ -270,7 +281,7 @@ void loop()
 
     case SEND_DATA:
         Serial.println("[STATE] SENDING DATA TO BROKER");
-        mqttClient.loop();
+        mqttClient.poll();
 
         if (mqttPacketSize > MQTT_MAX_OUTGOING_PACKET_SIZE)
         {
@@ -282,28 +293,7 @@ void loop()
         {
             if (!mqttClient.connected())
             {
-                if (mqttClient.connect(ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD))
-                {
-                    Serial.print("[INFO] Mqtt client connected,state: ");
-                    pubSubError(mqttClient.state());
-                    // serializeJson(json_fullData, Serial);
-                    Serial.print("[INFO] Device temp sensor : ");
-                    Serial.println(roundedTemperature);
-                    Serial.println("------------------------------------------------------------------------");
-                    mqttClient.subscribe(INCOMING_COMMANDS_TOPIC);
-                    // mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
-                }
-                else
-                {
-                    Serial.println("[ERROR]Not connected to broker! state:");
-                    pubSubError(mqttClient.state());
-                    Serial.println("WiFiClientSecure mqttClient state:");
-                    // char lastError[100];
-                    // wifiClient.lastError(lastError, 100);
-                    // Serial.print(lastError);
-                    // free(lastError);
-                    reconnect_to_broker(mqttClient, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
-                }
+                reconnect_to_broker(mqttClient, broker.IP, broker.port,ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
             }
             mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
             Serial.print("Publishing topic: ");
@@ -314,7 +304,7 @@ void loop()
         break;
     case HANDLE_WAIT:
 
-        mqttClient.loop();
+        mqttClient.poll();
 
         schedule.currentMillis = millis();
 
@@ -465,21 +455,30 @@ void handle_characteristic_changes()
     }
 }
 
-void onMessageReceived(const char topic[], byte *payload, unsigned int length)
+void onMessageReceived(int messageSize)
 {
-    Serial.print("Received message from topic: ");
-    Serial.println(topic);
-    Serial.print("Payload: ");
-    for (int i = 0; i < length; i++)
-    {
-        Serial.print((char)payload[i]);
+    incomingPayloadLength = 0;
+    while (mqttClient.available() && incomingPayloadLength < MQTT_MAX_INCOMING_PACKET_SIZE) {
+        byte nextByte = mqttClient.read();
+        incomingPayloadBuffer[incomingPayloadLength++] = nextByte;
     }
-    // Serial.print("Bytes :");
-    // Serial.println(length);
 
-    char json[length + 1];
-    memcpy(json, payload, length);
-    json[length] = '\0';
+    
+    if (incomingPayloadLength >= MQTT_MAX_INCOMING_PACKET_SIZE) {
+        Serial.println("Payload exceeds buffer size, some bytes may be truncated");
+    }
+
+    
+    Serial.print("Payload: ");
+    for (size_t i = 0; i < incomingPayloadLength; i++) {
+        Serial.print(incomingPayloadBuffer[i]);
+        // Serial.print(" ");
+    }
+
+
+    char json[messageSize + 1];
+    memcpy(json, incomingPayloadBuffer, messageSize);
+    json[messageSize] = '\0';
 
     DeserializationError error = deserializeJson(incommingMessageDoc, json);
 
