@@ -74,7 +74,7 @@ void mqtt_publish(MqttClient &client, const char *topic, byte *packetBytes, size
     if (client.beginMessage(topic, false, 1)) {
         client.write(packetBytes, packetSize);
         client.endMessage();
-        Serial.println("Message published successfully");
+        Serial.println("[INFO] Message published successfully");
     } else {
         Serial.println("Failed to start the message");
     }

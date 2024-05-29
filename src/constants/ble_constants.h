@@ -27,8 +27,8 @@ struct BLE_Data // VALUES TO RECEIVE FROM ANDROID
 {
     boolean patientDataReady; // should be set to true when the following values are defined : senderId,senderToken, contactId, encKey
 
-    // String upstreamTopic="EU/BE/device";
-    String upstreamTopic;
+    String upstreamTopic="device";
+    // String upstreamTopic;
     bool upstreamTopicReady = false;
 
     byte senderId[32];

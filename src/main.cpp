@@ -64,8 +64,12 @@ StaticJsonDocument<MQTT_MAX_INCOMING_PACKET_SIZE> incommingMessageDoc;
 /* SENSORS */
 DHT dht(DHTPIN, DHT_TYPE);
 DFRobot_Heartrate heartrate(DIGITAL_MODE);
-String temperatureString;
-float roundedTemperature;
+// String temperatureString;
+#define MAX_SENSOR_READINGS 60
+float roundedLatestSensorValue; //  updated every time the sensors get read
+float latestSensorMeanValue;
+float sensorReadings[MAX_SENSOR_READINGS + 1];
+int currentMeasureIndex = 0; // to keep track of the index to which the sensor data should be added into sensorReadings
 
 /* FULL DATA TO BE SENT */
 byte mqttPacket[MQTT_MAX_OUTGOING_PACKET_SIZE];
@@ -81,7 +85,10 @@ Broker_Config broker;
 WIFI_Config wifi;
 Schedules schedule;
 
+unsigned long INTERVAL_BETWEEN_SENSOR_READS = 1000;  // ms
 unsigned long INTERVAL_BETWEEN_MQTT_PACKETS = 10000; // ms
+unsigned long BEHAVIOR_CHANGE_MAX_DURATION = 180000; // after this time, the device will go back to its default sending frequency of INTERVAL_BETWEEN_MQTT_PACKETS
+bool changedBehavior = false;
 
 // WiFiClient wifiClient;
 WiFiClientSecure wifiClient;
@@ -93,10 +100,8 @@ Encryption_Data encryptData;
 State state = INIT;
 // State state = SETUP_MQTT;
 
-
-
 byte incomingPayloadBuffer[MQTT_MAX_INCOMING_PACKET_SIZE]; // Buffer to store the payload bytes
-size_t incomingPayloadLength = 0; 
+size_t incomingPayloadLength = 0;
 
 bool successfullyInitialized = false;
 bool usePacketEncryption = USE_PACKET_ENCRYPTION;
@@ -105,10 +110,10 @@ bool bluetooth_init();
 void onMessageReceived(int messageSize);
 void wifi_init(const char *ssid, const char *password);
 State check_if_end_of_bluetooth();
-
 bool patient_informations_ready();
-
 void handle_characteristic_changes();
+
+float get_sensors_mean_value();
 
 void setup()
 {
@@ -192,22 +197,61 @@ void loop()
             state = ERROR;
         }
 
-        
+        // CONFIG FINISHED, NEED TO RESET TIMERS
+        schedule.previousSendMillis = millis();
+        schedule.previousSensorMillis = millis();
 
-        state = HANDLE_WAIT;
+        state = SCHEDULER;
         break;
 
-    case READ_SENSORS_DATA:
+    case READ_AND_APPEND_SENSORS_DATA:
+        // THIS STEP SHOULD MAKE A MESURE AND ADD IT TO AN ARRAY
+        // THAT WAY, A MEAN VALUE OF THE ARRAY CAN BE COMPUTED JUST BEFORE ENCRYPTING AND SENDING IT
         Serial.println("------------------------------------------------------------------------");
-        Serial.println("[STATE] READING SENSORS");
+        Serial.println("[STATE] READ_AND_APPEND_SENSORS_DATA");
+
+        mqttClient.poll();
+
+        roundedLatestSensorValue = String(dht.readTemperature(), 1).toFloat();
+        if (currentMeasureIndex < MAX_SENSOR_READINGS)
+        {
+            if (!isnan(roundedLatestSensorValue))
+            {
+                sensorReadings[currentMeasureIndex] = roundedLatestSensorValue;
+                currentMeasureIndex++;
+                Serial.println("[DEBUG] Read a new value on sensor");
+            }
+        }
+        else
+        {
+            // IF THE ARE MORE MEASURES PERFORMED THAN THE AVAILABLE SPACE OF THE BUFFER, THE OLDEST VALUES (first in the array) WILL BE REPLACED
+            Serial.println("[DEBUG] Buffer of sensor data was full !");
+            currentMeasureIndex = 0;
+        }
+
+        state = SCHEDULER;
+        break;
+
+    case COMPUTE_SENSOR_MEAN:
+        // THIS STEP SHOULD COMPUTE THE MEAN VALUE OF ALL THE LATEST SENSOR MEASURES
+        // AND THEN CLEAN THE ARRAY
+        Serial.println("------------------------------------------------------------------------");
+        Serial.println("[STATE] COMPUTE_SENSOR_MEAN");
         // messageCount += 1;
         mqttClient.poll();
 
-        //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}}}
+        latestSensorMeanValue = get_sensors_mean_value();
+        Serial.print("[INFO] Sensor mean :");
+        Serial.println(latestSensorMeanValue);
+        state = PREPARE_SENSOR_DATA;
+        break;
 
-        temperatureString = String(dht.readTemperature(), 1);
-        roundedTemperature = temperatureString.toFloat();
-        json_sensorsData["content"]["*"]["measureValue"]["value"] = temperatureString;
+    case PREPARE_SENSOR_DATA:
+        // THIS STEP TAKES THE MEAN VALUE OF THE SENSOR AND PREPARES IT INTO A JSON
+        mqttClient.poll();
+
+        //{"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}} }
+        json_sensorsData["content"]["*"]["measureValue"]["value"] = String(latestSensorMeanValue, 2);
         json_sensorsData["content"]["*"]["measureValue"]["unit"] = "°C";
         json_sensorsData["content"]["*"]["measureValue"]["comment"] = "temperature";
 
@@ -216,16 +260,14 @@ void loop()
 
         jsonSensorDataStr.getBytes(encryptData.plaintext, jsonSensorDataSize + 1);
 
-        
         if (usePacketEncryption)
         {
             state = ENCRYPT_DATA;
         }
         else
         {
-            state = PREPARE_MQTT_PACKET;
+            state = PREPARE_MQTT_FULL_PACKET;
         }
-
         break;
 
     case ENCRYPT_DATA:
@@ -237,19 +279,21 @@ void loop()
         generate_IV(encryptData.iv);
 
         apply_pkcs7(encryptData.plaintext, encryptData.plaintext_with_padding, jsonSensorDataSize, encryptData.adjustedSize);
-        
+
+        mqttClient.poll();
+
         encrypt_CBC(&aes, bleData.encKey, encryptData.adjustedSize, encryptData.iv, encryptData.plaintext_with_padding, encryptData.ciphertext, AES_BLOCK_SIZE);
 
-        state = PREPARE_MQTT_PACKET;
+        state = PREPARE_MQTT_FULL_PACKET;
         break;
-    case PREPARE_MQTT_PACKET:
+
+    case PREPARE_MQTT_FULL_PACKET:
         Serial.println("[STATE] PREPARE_MQTT_PACKET");
 
         mqttClient.poll();
 
         if (usePacketEncryption)
         {
-            // to the full JSON,we add the encrypted part of the data : {"content" : {"*":{"measureValue":{"value":"22","unit":"°C"}}} }
 
             memcpy(encryptData.encryptedSelf, encryptData.iv, IV_SIZE);
             memcpy(encryptData.encryptedSelf + IV_SIZE, encryptData.ciphertext, encryptData.adjustedSize);
@@ -269,8 +313,6 @@ void loop()
 
         // serializeJson(json_fullData, Serial);
         serializeJson(json_fullData, jsonFullDataStr);
-
-
 
         jsonFullDataSize = jsonFullDataStr.length();
         jsonFullDataStr.getBytes(mqttPacket, jsonFullDataSize + 1);
@@ -293,26 +335,50 @@ void loop()
         {
             if (!mqttClient.connected())
             {
-                reconnect_to_broker(mqttClient, broker.IP, broker.port,ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
+                reconnect_to_broker(mqttClient, broker.IP, broker.port, ICURE_MQTT_ID, ICURE_MQTT_USER, ICURE_MQTT_PASSWORD, INCOMING_COMMANDS_TOPIC);
             }
             mqtt_publish(mqttClient, bleData.upstreamTopic.c_str(), mqttPacket, mqttPacketSize);
-            Serial.print("Publishing topic: ");
-            Serial.println(bleData.upstreamTopic.c_str());
+
+            // TO RESET THE CURSOR OF THE SENSOR BUFFER
+            currentMeasureIndex = 0;
         }
 
-        state = HANDLE_WAIT;
+        state = SCHEDULER;
         break;
-    case HANDLE_WAIT:
+
+    case SCHEDULER:
 
         mqttClient.poll();
 
-        schedule.currentMillis = millis();
+        schedule.currentSendMillis = millis();
+        schedule.currentSensorMillis = millis();
 
-        if (schedule.currentMillis - schedule.previousMillis >= INTERVAL_BETWEEN_MQTT_PACKETS)
+        if (schedule.currentSensorMillis - schedule.previousSensorMillis >= INTERVAL_BETWEEN_SENSOR_READS)
         {
-            state = READ_SENSORS_DATA;
-            schedule.previousMillis = schedule.currentMillis;
+            state = READ_AND_APPEND_SENSORS_DATA;
+            schedule.previousSensorMillis = schedule.currentSensorMillis;
         }
+
+        if (schedule.currentSendMillis - schedule.previousSendMillis >= INTERVAL_BETWEEN_MQTT_PACKETS)
+        {
+            state = COMPUTE_SENSOR_MEAN;
+            schedule.previousSendMillis = schedule.currentSendMillis;
+            // when a message has been published, reset the counter of the readings and clean the buffer of sensor values
+            schedule.previousSensorMillis = schedule.currentSensorMillis;
+        }
+
+        if (changedBehavior)
+        {
+            schedule.currentBehaviorMillis = millis();
+            if (schedule.currentBehaviorMillis - schedule.previousBehaviorMillis >= BEHAVIOR_CHANGE_MAX_DURATION)
+            {
+                // the max duration for changing the device behavior has been reached, set back to its default value
+                Serial.println("[INFO] Frequency back to Original");
+                INTERVAL_BETWEEN_MQTT_PACKETS = 10000;
+                changedBehavior = false;
+            }
+        }
+
         break;
 
     case ERROR:
@@ -320,6 +386,17 @@ void loop()
         delay(10000);
         break;
     }
+}
+
+float get_sensors_mean_value()
+{
+    float sum = 0.0;
+    for (int i = 0; i < currentMeasureIndex; i++)
+    {
+        sum += sensorReadings[i];
+    }
+    float meanValue = sum / currentMeasureIndex;
+    return round(meanValue * 100.0) / 100.0;
 }
 
 bool bluetooth_init()
@@ -457,59 +534,97 @@ void handle_characteristic_changes()
 
 void onMessageReceived(int messageSize)
 {
-    incomingPayloadLength = 0;
-    while (mqttClient.available() && incomingPayloadLength < MQTT_MAX_INCOMING_PACKET_SIZE) {
-        byte nextByte = mqttClient.read();
-        incomingPayloadBuffer[incomingPayloadLength++] = nextByte;
-    }
-
-    
-    if (incomingPayloadLength >= MQTT_MAX_INCOMING_PACKET_SIZE) {
-        Serial.println("Payload exceeds buffer size, some bytes may be truncated");
-    }
-
-    
-    Serial.print("Payload: ");
-    for (size_t i = 0; i < incomingPayloadLength; i++) {
-        Serial.print(incomingPayloadBuffer[i]);
-        // Serial.print(" ");
-    }
-
-
-    char json[messageSize + 1];
-    memcpy(json, incomingPayloadBuffer, messageSize);
-    json[messageSize] = '\0';
-
-    DeserializationError error = deserializeJson(incommingMessageDoc, json);
-
-    if (error)
+    if (messageSize == 0)
     {
-        Serial.print(F("deserializeJson() failed on incoming message : "));
-        Serial.println(error.f_str());
         return;
     }
-
-    if (incommingMessageDoc.containsKey("command"))
+    else if (messageSize == 1)
     {
-        const char *command = incommingMessageDoc["command"];
+        // 1,2,3,4
+        const byte validCommands[4] = {0x31, 0x32, 0x33, 0x34};
+        byte command = mqttClient.read();
 
-        if (strcmp(command, "reduce") == 0)
+        int count = 0;
+
+        for (int i = 0; i < 4; i++)
         {
-            Serial.println("Handling reduce command");
+            if (command == validCommands[i])
+            {
+                count = 15000 * (i + 1);
+                INTERVAL_BETWEEN_MQTT_PACKETS = count;
+                changedBehavior = true;
+                schedule.previousBehaviorMillis = millis();
+                schedule.previousSendMillis = millis();
+                schedule.previousSensorMillis = millis();
+                Serial.print("Sending message every :");
+                Serial.print(count);
+                Serial.println("ms");
+                break;
+            }
         }
-        else if (strcmp(command, "increase") == 0)
+        if (count == 0)
         {
-            Serial.println("Handling increase command");
-        }
-        else
-        {
-            Serial.println("Incoming command not handled");
+            Serial.println("Invalid command");
         }
     }
     else
     {
-        Serial.println("Uncompatible incoming message content");
+        Serial.println("Bad payload");
     }
-
-    Serial.println();
 }
+
+// void onMessageReceived(int messageSize)
+// {
+//     incomingPayloadLength = 0;
+//     while (mqttClient.available() && incomingPayloadLength < MQTT_MAX_INCOMING_PACKET_SIZE) {
+//         byte nextByte = mqttClient.read();
+//         incomingPayloadBuffer[incomingPayloadLength++] = nextByte;
+//     }
+
+//     if (incomingPayloadLength >= MQTT_MAX_INCOMING_PACKET_SIZE) {
+//         Serial.println("Payload exceeds buffer size, some bytes may be truncated");
+//     }
+
+//     Serial.print("Payload: ");
+//     for (size_t i = 0; i < incomingPayloadLength; i++) {
+//         Serial.print(incomingPayloadBuffer[i]);
+//         // Serial.print(" ");
+//     }
+
+//     char json[messageSize + 1];
+//     memcpy(json, incomingPayloadBuffer, messageSize);
+//     json[messageSize] = '\0';
+
+//     DeserializationError error = deserializeJson(incommingMessageDoc, json);
+
+//     if (error)
+//     {
+//         Serial.print(F("deserializeJson() failed on incoming message : "));
+//         Serial.println(error.f_str());
+//         return;
+//     }
+
+//     if (incommingMessageDoc.containsKey("command"))
+//     {
+//         const char *command = incommingMessageDoc["command"];
+
+//         if (strcmp(command, "reduce") == 0)
+//         {
+//             Serial.println("Handling reduce command");
+//         }
+//         else if (strcmp(command, "increase") == 0)
+//         {
+//             Serial.println("Handling increase command");
+//         }
+//         else
+//         {
+//             Serial.println("Incoming command not handled");
+//         }
+//     }
+//     else
+//     {
+//         Serial.println("Uncompatible incoming message content");
+//     }
+
+//     Serial.println();
+// }

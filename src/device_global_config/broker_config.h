@@ -5,7 +5,7 @@
 #define ICURE_MQTT_USER "IoT_device"
 #define ICURE_MQTT_PASSWORD "icureEspPassword"
 
-#define INCOMING_COMMANDS_TOPIC "EU/BE/commands"
+#define INCOMING_COMMANDS_TOPIC "EU/BE/cmd"
 
 #define BROKER_IP "buchinn.be"
 #define BROKER_PORT 8883
